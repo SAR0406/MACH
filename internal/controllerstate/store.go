@@ -31,32 +31,33 @@ type Device struct {
 }
 
 type Store struct {
-mu       sync.RWMutex
-devices  map[string]*Device
-tokenIdx map[string]string
-auditLog string
-state    string
+	mu       sync.RWMutex
+	devices  map[string]*Device
+	tokenIdx map[string]string
+	auditLog string
+	state    string
 }
 
 func NewStore() (*Store, error) {
-audit, err := config.ControllerAuditLogPath()
-if err != nil {
-	return nil, err
+	audit, err := config.ControllerAuditLogPath()
+	if err != nil {
+		return nil, err
+	}
+	statePath, err := config.ControllerStorePath()
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{
+		devices:  map[string]*Device{},
+		tokenIdx: map[string]string{},
+		auditLog: audit,
+		state:    statePath,
+	}
+	if err := s.load(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
-statePath, err := config.ControllerStorePath()
-if err != nil {
-	return nil, err
-}
-s := &Store{
-	devices:  map[string]*Device{},
-	tokenIdx: map[string]string{},
-	auditLog: audit,
-	state:    statePath,
-}
-if err := s.load(); err != nil {
-	return nil, err
-}
-return s, nil
 
 func (s *Store) RegisterChallenge(req api.RegisterChallengeRequest) (string, error) {
 	if req.DeviceID == "" || req.PublicKey == "" {
@@ -217,7 +218,9 @@ func (s *Store) Status(deviceID string) (api.DeviceStatusResponse, error) {
 	switch {
 	case online:
 		deviceState = api.DeviceStateOnline
-	case !dev.LastHeartbeat.IsZero():
+	case dev.LastHeartbeat.IsZero():
+		deviceState = api.DeviceStateClaimed
+	case time.Since(dev.LastHeartbeat) < 2*time.Minute:
 		deviceState = api.DeviceStateRecovering
 	default:
 		deviceState = api.DeviceStateOffline
@@ -335,53 +338,53 @@ func bytesSplitLines(b []byte) [][]byte {
 			out = append(out, b[start:i])
 			start = i + 1
 		}
-
-		type persistentStore struct {
-			Devices map[string]*Device `json:"devices"`
-		}
-
-		func (s *Store) load() error {
-			b, err := os.ReadFile(s.state)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return nil
-				}
-				return err
-			}
-			var p persistentStore
-			if err := json.Unmarshal(b, &p); err != nil {
-				return err
-			}
-			if p.Devices == nil {
-				p.Devices = map[string]*Device{}
-			}
-			s.devices = p.Devices
-			s.tokenIdx = map[string]string{}
-			for id, dev := range s.devices {
-				if dev.Exposures == nil {
-					dev.Exposures = map[string]api.Exposure{}
-				}
-				if dev.Token != "" {
-					s.tokenIdx[dev.Token] = id
-				}
-			}
-			return nil
-		}
-
-		func (s *Store) saveLocked() error {
-			if err := os.MkdirAll(filepath.Dir(s.state), 0o700); err != nil {
-				return err
-			}
-			p := persistentStore{Devices: s.devices}
-			b, err := json.MarshalIndent(p, "", "  ")
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(s.state, b, 0o600)
-		}
 	}
 	if start < len(b) {
 		out = append(out, b[start:])
 	}
 	return out
+}
+
+type persistentStore struct {
+	Devices map[string]*Device `json:"devices"`
+}
+
+func (s *Store) load() error {
+	b, err := os.ReadFile(s.state)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var p persistentStore
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	if p.Devices == nil {
+		p.Devices = map[string]*Device{}
+	}
+	s.devices = p.Devices
+	s.tokenIdx = map[string]string{}
+	for id, dev := range s.devices {
+		if dev.Exposures == nil {
+			dev.Exposures = map[string]api.Exposure{}
+		}
+		if dev.Token != "" {
+			s.tokenIdx[dev.Token] = id
+		}
+	}
+	return nil
+}
+
+func (s *Store) saveLocked() error {
+	if err := os.MkdirAll(filepath.Dir(s.state), 0o700); err != nil {
+		return err
+	}
+	p := persistentStore{Devices: s.devices}
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.state, b, 0o600)
 }

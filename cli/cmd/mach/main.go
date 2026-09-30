@@ -292,50 +292,50 @@ func printCheck(name string, ok bool) {
 	if ok {
 		mark = "✓"
 	}
+	fmt.Printf("%-22s %s\n", name, mark)
+}
 
-	func canReachController(controllerURL string) bool {
-		u, err := url.Parse(controllerURL)
-		if err != nil || u.Host == "" {
-			return false
-		}
-		host := u.Host
-		if !strings.Contains(host, ":") {
-			if u.Scheme == "https" {
-				host += ":443"
-			} else {
-				host += ":80"
-			}
-		}
-		c, err := net.DialTimeout("tcp", host, 1200*time.Millisecond)
-		if err != nil {
-			return false
-		}
-		_ = c.Close()
-		return true
-	}
-
-	func hasTLSEndpoint(st api.DeviceStatusResponse) bool {
-		for _, ex := range st.Exposures {
-			if strings.HasPrefix(ex.PublicURL, "https://") {
-				return true
-			}
-		}
+func canReachController(controllerURL string) bool {
+	u, err := url.Parse(controllerURL)
+	if err != nil || u.Host == "" {
 		return false
 	}
-
-	func hasMACHDNS(st api.DeviceStatusResponse) bool {
-		for _, ex := range st.Exposures {
-			u, err := url.Parse(ex.PublicURL)
-			if err != nil || u.Host == "" {
-				continue
-			}
-			if strings.HasSuffix(u.Hostname(), ".mach.dev") {
-				return true
-			}
+	host := u.Host
+	if !strings.Contains(host, ":") {
+		if u.Scheme == "https" {
+			host += ":443"
+		} else {
+			host += ":80"
 		}
-		return len(st.Exposures) == 0
 	}
-	fmt.Printf("%-22s %s\n", name, mark)
+	c, err := net.DialTimeout("tcp", host, 1200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+func hasTLSEndpoint(st api.DeviceStatusResponse) bool {
+	for _, ex := range st.Exposures {
+		if strings.HasPrefix(ex.PublicURL, "https://") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMACHDNS(st api.DeviceStatusResponse) bool {
+	for _, ex := range st.Exposures {
+		u, err := url.Parse(ex.PublicURL)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		if strings.HasSuffix(u.Hostname(), ".mach.dev") {
+			return true
+		}
+	}
+	return len(st.Exposures) == 0
 }
 
 func usage() {
