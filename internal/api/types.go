@@ -11,9 +11,9 @@ type CapabilitySnapshot struct {
 }
 
 type RegisterChallengeRequest struct {
-	DeviceID  string `json:"device_id"`
+	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
-	PublicKey string `json:"public_key"`
+	PublicKey  string `json:"public_key"`
 }
 
 type RegisterChallengeResponse struct {
@@ -36,12 +36,12 @@ type HeartbeatRequest struct {
 }
 
 type Exposure struct {
-	ID          string `json:"id"`
-	Port        int    `json:"port"`
-	Path        string `json:"path"`
-	PublicURL   string `json:"public_url"`
-	RelayURL    string `json:"relay_url"`
-	Status      string `json:"status"`
+	ID        string `json:"id"`
+	Port      int    `json:"port"`
+	Path      string `json:"path"`
+	PublicURL string `json:"public_url"`
+	RelayURL  string `json:"relay_url"`
+	Status    string `json:"status"`
 }
 
 type ExposeRequest struct {
