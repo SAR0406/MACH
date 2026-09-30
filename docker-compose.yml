@@ -1,0 +1,26 @@
+services:
+  controller:
+    image: golang:1.24
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    command: sh -lc "go run ./controller/cmd/mach-controller"
+    environment:
+      MACH_CONTROLLER_ADDR: ":8080"
+      MACH_CONTROLLER_PUBLIC_BASE: "http://controller:8080"
+      MACH_CONTROLLER_HOME: "/workspace/.mach-controller"
+    ports:
+      - "8080:8080"
+
+  agent:
+    image: golang:1.24
+    depends_on:
+      - controller
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    command: sh -lc "go run ./agent/cmd/mach-agent"
+    environment:
+      MACH_HOME: "/workspace/.mach"
+      MACH_CONTROLLER_URL: "http://controller:8080"
+      MACH_REACHABLE_HOST: "agent"
