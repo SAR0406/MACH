@@ -81,6 +81,14 @@ func ControllerAuditLogPath() (string, error) {
 	return filepath.Join(d, "audit.log"), nil
 }
 
+func ControllerStorePath() (string, error) {
+	d, err := ControllerStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "store.json"), nil
+}
+
 func (c DeviceConfig) Validate() error {
 	if c.DeviceID == "" || c.PublicKey == "" || c.PrivateKey == "" {
 		return errors.New("device identity is incomplete")

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -30,23 +31,32 @@ type Device struct {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	devices  map[string]*Device
-	tokenIdx map[string]string
-	auditLog string
+mu       sync.RWMutex
+devices  map[string]*Device
+tokenIdx map[string]string
+auditLog string
+state    string
 }
 
 func NewStore() (*Store, error) {
-	audit, err := config.ControllerAuditLogPath()
-	if err != nil {
-		return nil, err
-	}
-	return &Store{
-		devices:  map[string]*Device{},
-		tokenIdx: map[string]string{},
-		auditLog: audit,
-	}, nil
+audit, err := config.ControllerAuditLogPath()
+if err != nil {
+	return nil, err
 }
+statePath, err := config.ControllerStorePath()
+if err != nil {
+	return nil, err
+}
+s := &Store{
+	devices:  map[string]*Device{},
+	tokenIdx: map[string]string{},
+	auditLog: audit,
+	state:    statePath,
+}
+if err := s.load(); err != nil {
+	return nil, err
+}
+return s, nil
 
 func (s *Store) RegisterChallenge(req api.RegisterChallengeRequest) (string, error) {
 	if req.DeviceID == "" || req.PublicKey == "" {
@@ -73,6 +83,7 @@ func (s *Store) RegisterChallenge(req api.RegisterChallengeRequest) (string, err
 	}
 	dev.Challenge = challenge
 	s.audit("claim_challenge", req.DeviceID, "claim challenge issued")
+	_ = s.saveLocked()
 	return challenge, nil
 }
 
@@ -97,6 +108,7 @@ func (s *Store) RegisterComplete(req api.RegisterCompleteRequest) (string, error
 	dev.Token = token
 	s.tokenIdx[token] = dev.ID
 	s.audit("claim_complete", req.DeviceID, "device claimed")
+	_ = s.saveLocked()
 	return token, nil
 }
 
@@ -133,6 +145,7 @@ func (s *Store) Heartbeat(deviceID string, hb api.HeartbeatRequest) error {
 	}
 	dev.Capabilities = hb.Capabilities
 	s.audit("heartbeat", deviceID, "device heartbeat received")
+	_ = s.saveLocked()
 	return nil
 }
 
@@ -147,9 +160,9 @@ func (s *Store) Expose(deviceID string, port int, publicBase string) (api.Exposu
 	if err != nil {
 		return api.Exposure{}, err
 	}
-	path := "RELAY"
+	path := api.NetworkPathRelay
 	if directReachable(dev.ReachableHost, port) {
-		path = "DIRECT"
+		path = api.NetworkPathDirect
 	}
 	ex := api.Exposure{
 		ID:        id,
@@ -157,11 +170,12 @@ func (s *Store) Expose(deviceID string, port int, publicBase string) (api.Exposu
 		Path:      path,
 		PublicURL: fmt.Sprintf("https://%s.mach.dev", id),
 		RelayURL:  fmt.Sprintf("%s/p/%s", trimSlash(publicBase), id),
-		Status:    "ACTIVE",
+		Status:    api.ExposureStatusActive,
 	}
 	dev.Exposures[id] = ex
 	dev.NetworkPath = path
 	s.audit("expose", deviceID, fmt.Sprintf("port %d exposed as %s", port, id))
+	_ = s.saveLocked()
 	return ex, nil
 }
 
@@ -175,6 +189,7 @@ func (s *Store) Stop(deviceID string, exposureID string) error {
 	if exposureID == "" {
 		dev.Exposures = map[string]api.Exposure{}
 		s.audit("stop", deviceID, "all exposures stopped")
+		_ = s.saveLocked()
 		return nil
 	}
 	if _, ok := dev.Exposures[exposureID]; !ok {
@@ -182,6 +197,7 @@ func (s *Store) Stop(deviceID string, exposureID string) error {
 	}
 	delete(dev.Exposures, exposureID)
 	s.audit("stop", deviceID, fmt.Sprintf("exposure %s stopped", exposureID))
+	_ = s.saveLocked()
 	return nil
 }
 
@@ -195,7 +211,16 @@ func (s *Store) Status(deviceID string) (api.DeviceStatusResponse, error) {
 	online := time.Since(dev.LastHeartbeat) < 20*time.Second
 	netPath := dev.NetworkPath
 	if netPath == "" {
-		netPath = "UNKNOWN"
+		netPath = api.NetworkPathUnknown
+	}
+	deviceState := api.DeviceStateClaimed
+	switch {
+	case online:
+		deviceState = api.DeviceStateOnline
+	case !dev.LastHeartbeat.IsZero():
+		deviceState = api.DeviceStateRecovering
+	default:
+		deviceState = api.DeviceStateOffline
 	}
 	exposures := make([]api.Exposure, 0, len(dev.Exposures))
 	for _, ex := range dev.Exposures {
@@ -208,6 +233,7 @@ func (s *Store) Status(deviceID string) (api.DeviceStatusResponse, error) {
 		DeviceID:      dev.ID,
 		DeviceName:    dev.Name,
 		Online:        online,
+		DeviceState:   deviceState,
 		NetworkPath:   netPath,
 		LastHeartbeat: dev.LastHeartbeat,
 		Capabilities:  dev.Capabilities,
@@ -308,6 +334,50 @@ func bytesSplitLines(b []byte) [][]byte {
 		if ch == '\n' {
 			out = append(out, b[start:i])
 			start = i + 1
+		}
+
+		type persistentStore struct {
+			Devices map[string]*Device `json:"devices"`
+		}
+
+		func (s *Store) load() error {
+			b, err := os.ReadFile(s.state)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			var p persistentStore
+			if err := json.Unmarshal(b, &p); err != nil {
+				return err
+			}
+			if p.Devices == nil {
+				p.Devices = map[string]*Device{}
+			}
+			s.devices = p.Devices
+			s.tokenIdx = map[string]string{}
+			for id, dev := range s.devices {
+				if dev.Exposures == nil {
+					dev.Exposures = map[string]api.Exposure{}
+				}
+				if dev.Token != "" {
+					s.tokenIdx[dev.Token] = id
+				}
+			}
+			return nil
+		}
+
+		func (s *Store) saveLocked() error {
+			if err := os.MkdirAll(filepath.Dir(s.state), 0o700); err != nil {
+				return err
+			}
+			p := persistentStore{Devices: s.devices}
+			b, err := json.MarshalIndent(p, "", "  ")
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(s.state, b, 0o600)
 		}
 	}
 	if start < len(b) {

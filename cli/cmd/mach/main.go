@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -115,9 +116,14 @@ func runStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("Device: %s (%s)\n", st.DeviceName, cfg.DeviceID)
+	fmt.Printf("State: %s\n", st.DeviceState)
 	fmt.Printf("Online: %v\n", st.Online)
 	fmt.Printf("Path: %s\n", st.NetworkPath)
-	fmt.Printf("Last heartbeat: %s\n", st.LastHeartbeat.Format(time.RFC3339))
+	if st.LastHeartbeat.IsZero() {
+		fmt.Printf("Last heartbeat: never\n")
+	} else {
+		fmt.Printf("Last heartbeat: %s\n", st.LastHeartbeat.Format(time.RFC3339))
+	}
 	fmt.Printf("CPU: %d cores\nRAM: %d MiB\n", st.Capabilities.CPUCores, st.Capabilities.MemoryMiB)
 	if len(st.Exposures) == 0 {
 		fmt.Println("Exposures: none")
@@ -231,14 +237,23 @@ func runDoctor(args []string) error {
 	fmt.Println("MACH DIAGNOSTICS")
 	printCheck("Identity", cfg.DeviceID != "")
 	printCheck("Controller", cfg.ControllerURL != "")
+	printCheck("Internet", canReachController(cfg.ControllerURL))
 	printCheck("Agent heartbeat", st.Online)
-	printCheck("Direct path", st.NetworkPath == "DIRECT")
-	printCheck("Relay fallback", st.NetworkPath == "RELAY" || st.NetworkPath == "DIRECT")
-	printCheck("TLS endpoint assigned", len(st.Exposures) > 0)
+	printCheck("NAT", st.NetworkPath == api.NetworkPathDirect || st.NetworkPath == api.NetworkPathRelay)
+	printCheck("Direct path", st.NetworkPath == api.NetworkPathDirect)
+	printCheck("Relay fallback", st.NetworkPath == api.NetworkPathRelay || st.NetworkPath == api.NetworkPathDirect)
+	printCheck("DNS", hasMACHDNS(st))
+	printCheck("TLS endpoint assigned", hasTLSEndpoint(st))
 	fmt.Println()
-	if st.NetworkPath == "RELAY" {
+	if st.NetworkPath == api.NetworkPathRelay {
 		fmt.Println("Suggested action:")
 		fmt.Println("Relay mode is active. No configuration required.")
+	} else if st.NetworkPath == api.NetworkPathDirect {
+		fmt.Println("Suggested action:")
+		fmt.Println("Direct path is active. Keep agent running for best availability.")
+	} else {
+		fmt.Println("Suggested action:")
+		fmt.Println("Run mach expose <port> after your service starts to complete endpoint checks.")
 	}
 	return nil
 }
@@ -276,6 +291,49 @@ func printCheck(name string, ok bool) {
 	mark := "✗"
 	if ok {
 		mark = "✓"
+	}
+
+	func canReachController(controllerURL string) bool {
+		u, err := url.Parse(controllerURL)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		host := u.Host
+		if !strings.Contains(host, ":") {
+			if u.Scheme == "https" {
+				host += ":443"
+			} else {
+				host += ":80"
+			}
+		}
+		c, err := net.DialTimeout("tcp", host, 1200*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}
+
+	func hasTLSEndpoint(st api.DeviceStatusResponse) bool {
+		for _, ex := range st.Exposures {
+			if strings.HasPrefix(ex.PublicURL, "https://") {
+				return true
+			}
+		}
+		return false
+	}
+
+	func hasMACHDNS(st api.DeviceStatusResponse) bool {
+		for _, ex := range st.Exposures {
+			u, err := url.Parse(ex.PublicURL)
+			if err != nil || u.Host == "" {
+				continue
+			}
+			if strings.HasSuffix(u.Hostname(), ".mach.dev") {
+				return true
+			}
+		}
+		return len(st.Exposures) == 0
 	}
 	fmt.Printf("%-22s %s\n", name, mark)
 }

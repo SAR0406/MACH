@@ -28,9 +28,12 @@ make build
 ./bin/mach-agent
 ./bin/mach expose 3000
 ./bin/mach status
+./bin/mach doctor
 ```
 
 ## Notes
 
 - `https://<id>.mach.dev` is allocated as the canonical endpoint model.
 - Local development relay URL is emitted as `http://127.0.0.1:8080/p/<id>`.
+- Controller state is persisted at `~/.mach-controller/v1/state/store.json`.
+- Product contract and MVP acceptance criteria live in `/home/runner/work/MACH/MACH/docs/mvp.md`.
